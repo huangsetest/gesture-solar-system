@@ -1,0 +1,248 @@
+/* Reset */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Courier New', monospace;
+    background: #000;
+    color: #0f0;
+    overflow: hidden;
+    height: 100vh;
+}
+
+/* Main Canvas */
+#canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+}
+
+/* Camera Preview */
+.camera-preview {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    width: 320px;
+    height: 240px;
+    border: 2px solid #0f0;
+    background: #000;
+    overflow: hidden;
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+    z-index: 10;
+}
+
+/* Connection status */
+.conn-ok {
+    color: #39ff88 !important;
+}
+
+.conn-err {
+    color: #ff5555 !important;
+}
+
+/* Backend MJPEG preview fills the box */
+.camera-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    /* Mirror effect */
+    background: #000;
+    /* 首帧到达前隐藏, 之后由 JS 移除 .no-frame */
+}
+
+/* 首帧到达前的占位提示 */
+.camera-preview.no-frame img {
+    opacity: 0;
+}
+
+.camera-preview .placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #0a0;
+    font-size: 12px;
+    pointer-events: none;
+}
+
+.camera-preview:not(.no-frame) .placeholder {
+    display: none;
+}
+
+.camera-preview video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    /* Mirror effect */
+}
+
+.camera-preview canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    transform: scaleX(-1);
+    /* Mirror effect */
+    pointer-events: none;
+}
+
+/* Technical Overlay */
+.overlay {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    background: rgba(0, 0, 0, 0.8);
+    border: 2px solid #0f0;
+    padding: 15px;
+    font-size: 14px;
+    min-width: 350px;
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+}
+
+.title {
+    font-size: 16px;
+    font-weight: bold;
+    margin-bottom: 15px;
+    color: #0f0;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.data-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.data-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.label {
+    color: #0a0;
+    font-weight: bold;
+}
+
+.value {
+    color: #0f0;
+    font-family: 'Courier New', monospace;
+    text-align: right;
+}
+
+.status {
+    margin-top: 15px;
+    padding-top: 10px;
+    border-top: 1px solid #0a0;
+    color: #0f0;
+    font-size: 12px;
+}
+
+/* Instructions */
+.instructions {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.8);
+    border: 2px solid #0f0;
+    padding: 15px 30px;
+    text-align: center;
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+}
+
+.instructions p {
+    color: #0f0;
+    font-size: 14px;
+    margin: 5px 0;
+}
+
+/* Developer Credit */
+.developer-credit {
+    position: absolute;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.8);
+    border: 2px solid #0f0;
+    padding: 10px 20px;
+    text-align: center;
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+}
+
+.developer-credit p {
+    color: #0f0;
+    font-size: 12px;
+    margin: 0;
+}
+
+.developer-credit strong {
+    color: #0ff;
+    font-weight: bold;
+}
+
+/* Animations */
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.7;
+    }
+}
+
+.pulse {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Gesture States */
+.gesture-rotate {
+    color: #ff4444 !important;
+}
+
+.gesture-pan {
+    color: #00ff00 !important;
+}
+
+.gesture-zoomin {
+    color: #00ffff !important;
+}
+
+.gesture-zoomout {
+    color: #ffff00 !important;
+}
+
+.gesture-box {
+    color: #ff00ff !important;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .overlay {
+        font-size: 12px;
+        min-width: 280px;
+    }
+
+    .title {
+        font-size: 14px;
+    }
+
+    .instructions {
+        font-size: 12px;
+        padding: 10px 20px;
+    }
+}
