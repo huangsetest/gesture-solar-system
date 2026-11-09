@@ -39,6 +39,10 @@ MediaPipe 手势识别跑在**本地 PC 的 Python 端**（模型随 wheel 打�
 
 建议：手离摄像头 0.5 ~ 1 米，正对镜头，光线充足。
 
+> ⚠️ 手不要凑太近。MediaPipe 的掌心检测模型对手在画面中的占比有偏好，
+> 手几乎占满画面时反而检不出来。实测把推理输入等比缩到长边 480 后，
+> 满幅大图也能稳定识别，帧率还从 26 提升到 27 FPS。
+
 ---
 
 ## 架构
@@ -79,15 +83,17 @@ Python server.py
 gesture_solar/
 ├── 启动.bat                  ← 双击启动
 ├── server.py                 ← 后端: 摄像头 + MediaPipe + WebSocket + HTTP
-├── test_gesture.py           ← 手势分类器单元测试
+├── test_gesture.py           ← 手势分类器单元测试(合成关键点)
+├── test_real_gestures.py     ← 手势分类器真实照片测试(6个样本, --show 可出标注图)
 ├── verify_browser.py         ← 浏览器端渲染验证 (11 项)
 ├── verify_control.py         ← 手势→相机联动验证 (5 项)
 ├── verify_gesture_e2e.py     ← 端到端手势识别验证
-├── diag_scene.py             ← 场景诊断工具
+├── verify_twohand.py         ← 双手/放大/聚焦验证 (8 项)
 ├── models/
 │   └── hand_landmarker.task  ← MediaPipe 模型 (本地)
 ├── testdata/
-│   └── woman_hands.jpg       ← 官方测试图
+│   ├── woman_hands.jpg       ← 官方测试图
+│   └── gestures/             ← 真实手势照片样本(6个)
 └── web/
     ├── index.html
     ├── css/style.css

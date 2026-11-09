@@ -123,7 +123,8 @@ async def main():
 
         # --- box: 回到最佳视角 ---
         await inject([mk("box", x=0.0, y=0.0)])
-        await page.wait_for_timeout(800)
+        # targetDistance 是插值收敛的, 给足时间
+        await page.wait_for_timeout(1500)
         after = await probe()
         results.append(("box 最佳视角", abs(after["dist"] - 180) < 1.0,
                         f"dist = {after['dist']} (期望 180)"))

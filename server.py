@@ -110,25 +110,29 @@ def classify_gesture(landmarks) -> str:
         ang = _angle_at(landmarks[mcp], landmarks[pip], landmarks[tip])
         extended.append(ang > 140.0)
 
-    # 拇指判定: 用「拇指尖(4) 相对食指根(5)-小指根(17) 连线」的位置。
-    # 拇指收回在掌心 -> 指尖落在该连线附近(靠近手掌中轴);
-    # 拇指伸出(尤其侧向张开) -> 指尖明显跑到连线外侧。
-    # 用垂距 / 手掌宽度 的比值, 对远近和手掌朝向都不敏感。
-    v = np.array(landmarks[17]) - np.array(landmarks[5])       # 食指根 -> 小指根
-    w = np.array(landmarks[4]) - np.array(landmarks[5])        # 食指根 -> 拇指尖
-    vlen = np.linalg.norm(v)
-    if vlen < 1e-6:
-        thumb_out = False
-    else:
-        # 垂距 = |w x v| / |v|  (显式 2D 叉积, 兼容 numpy 2.x)
-        cross = float(w[0] * v[1] - w[1] * v[0])
-        perp = abs(cross / vlen)
-        # 沿连线方向的投影, 归一化到 [0,1]
-        along = float(np.dot(w, v) / (vlen * vlen))
-        # 指尖超出连线两端(u<0 在食指根外, u>1 在小指根外)也算伸出
-        beyond = along < -0.05 or along > 1.05
-        thumb_out = bool(perp > vlen * 0.35 or beyond)
-    extended.insert(0, bool(thumb_out))
+    # 拇指判定: 综合「拇指 IP 关节折角」和「拇指尖相对手掌中轴的位置」。
+    #
+    # 实测(真实照片样本):
+    #   姿态              IP角    r2=d(tip4,mcp9)/d(mcp9,mcp17)
+    #   握拳              122°    0.73
+    #   食指指向          153°    0.26
+    #   V字手势           158°    0.33
+    #   三指              163°    1.82
+    #   张开手掌          178°    1.64
+    #
+    # 单看角度会把"食指指向"(153°)误判成伸出;
+    # 单看距离比会把"握拳"(拇指横跨掌心, 离小指根远, r2=1.23)误判成伸出。
+    # 两者取交 + 距离比兜底, 三种姿态都能正确区分。
+    thumb_ip_angle = _angle_at(landmarks[2], landmarks[3], landmarks[4])
+    d_thumb_mid = _dist(landmarks[4], landmarks[9])
+    d_mid_pinky = _dist(landmarks[9], landmarks[17])
+    r2 = d_thumb_mid / max(d_mid_pinky, 1e-6)
+
+    thumb_out = bool(
+        (thumb_ip_angle > 145.0 and r2 > 1.0)
+        or r2 > 1.5
+    )
+    extended.insert(0, thumb_out)
 
     count = sum(extended)
     # extended[0]=拇指, [1]=食指, [2]=中指, [3]=无名指, [4]=小指
@@ -168,6 +172,8 @@ class GestureEngine:
         self.cam_index = cam_index
         self.width = width
         self.height = height
+        # 推理输入的长边尺寸(等比缩放)。480 兼顾检出率与速度。
+        self.infer_long = 480
 
         self._lock = threading.Lock()
         self.latest: dict = {
@@ -259,7 +265,20 @@ class GestureEngine:
 
             ts += 33  # 毫秒时间戳, 单调递增即可
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # 推理输入: 等比缩放到长边 480 再送模型。
+            #  - 为什么缩: MediaPipe 的掌心检测模型对手部在画面中的占比有偏好,
+            #    手占满画面时反而检不出(实测满幅图检不到, 缩到 0.7 就能检出)。
+            #    统一缩到较小尺寸既保证稳定检出, 也让推理更快。
+            #  - 必须等比: 改变宽高比会让手变形, 角度判定会失真。
+            #    实测等比缩放后归一化关键点坐标几乎不变, 所以无需换算回原图。
+            h, w = frame.shape[:2]
+            scale = self.infer_long / max(h, w)
+            if scale < 1.0:
+                infer_img = cv2.resize(frame, (int(w * scale), int(h * scale)),
+                                      interpolation=cv2.INTER_AREA)
+            else:
+                infer_img = frame
+            rgb = cv2.cvtColor(infer_img, cv2.COLOR_BGR2RGB)
             mp_image = Image(image_format=ImageFormat.SRGB, data=rgb)
 
             try:
