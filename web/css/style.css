@@ -230,6 +230,14 @@ body {
     color: #ff00ff !important;
 }
 
+.gesture-point {
+    color: #4fc3f7 !important;
+}
+
+.gesture-twospan {
+    color: #ffa500 !important;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .overlay {

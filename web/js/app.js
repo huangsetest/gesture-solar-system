@@ -22,6 +22,7 @@ class GestureSolarApp {
         this.videoCtx = this.videoOverlay.getContext('2d');
 
         this.handPosEl = document.getElementById('hand-position');
+        this.handCountEl = document.getElementById('hand-count');
         this.fpsEl = document.getElementById('fps');
         this.gestureEl = document.getElementById('gesture');
         this.distanceEl = document.getElementById('distance');
@@ -104,19 +105,22 @@ class GestureSolarApp {
         this.isHandDetected = !!state.hand_detected;
         this.currentGesture = state.gesture || 'none';
         this.serverFps = state.fps;
+        this.handCount = state.hand_count || 0;
+        this.twoHandSpan = state.two_hand_span || 0;
+        this.fingerTip = state.tip || [0.5, 0.5];
 
         if (this.connEl) {
             this.connEl.textContent = '● 已连接';
             this.connEl.className = 'value conn-ok';
         }
 
-        this.drawLandmarks(state.landmarks || []);
+        this.drawLandmarks(state.landmarks || [], state.hands || []);
     }
 
     // ------------------------------------------------------------------
     // 手部骨架绘制(叠加在预览画面上)
     // ------------------------------------------------------------------
-    drawLandmarks(landmarks) {
+    drawLandmarks(landmarks, allHands) {
         const w = this.videoOverlay.width;
         const h = this.videoOverlay.height;
         this.videoCtx.clearRect(0, 0, w, h);
@@ -137,22 +141,43 @@ class GestureSolarApp {
             [5, 9], [9, 13], [13, 17]
         ];
 
-        this.videoCtx.strokeStyle = '#39ff88';
-        this.videoCtx.lineWidth = 2;
-        for (const [s, e] of connections) {
-            const a = landmarks[s], b = landmarks[e];
-            this.videoCtx.beginPath();
-            this.videoCtx.moveTo(a[0] * w, a[1] * h);
-            this.videoCtx.lineTo(b[0] * w, b[1] * h);
-            this.videoCtx.stroke();
-        }
+        // 双手时用不同颜色区分
+        const palette = ['#39ff88', '#ffd166', '#4fc3f7'];
 
-        this.videoCtx.fillStyle = '#ffd166';
-        for (const p of landmarks) {
-            this.videoCtx.beginPath();
-            this.videoCtx.arc(p[0] * w, p[1] * h, 3, 0, Math.PI * 2);
-            this.videoCtx.fill();
-        }
+        // 画所有手(后端已给出手序), 主导手最后画在上层
+        const hands = (allHands && allHands.length) ? allHands : [{ landmarks }];
+        hands.forEach((hand, i) => {
+            const pts = hand.landmarks || [];
+            if (!pts.length) return;
+            const color = palette[i % palette.length];
+
+            this.videoCtx.strokeStyle = color;
+            this.videoCtx.lineWidth = 2;
+            for (const [s, e] of connections) {
+                const a = pts[s], b = pts[e];
+                if (!a || !b) continue;
+                this.videoCtx.beginPath();
+                this.videoCtx.moveTo(a[0] * w, a[1] * h);
+                this.videoCtx.lineTo(b[0] * w, b[1] * h);
+                this.videoCtx.stroke();
+            }
+
+            this.videoCtx.fillStyle = color;
+            for (const p of pts) {
+                this.videoCtx.beginPath();
+                this.videoCtx.arc(p[0] * w, p[1] * h, 3, 0, Math.PI * 2);
+                this.videoCtx.fill();
+            }
+
+            // 标出手势名
+            this.videoCtx.fillStyle = color;
+            this.videoCtx.font = 'bold 12px monospace';
+            this.videoCtx.fillText(
+                (hand.gesture || '').toUpperCase(),
+                pts[0][0] * w - 14,
+                pts[0][1] * h + 16
+            );
+        });
     }
 
     // ------------------------------------------------------------------
@@ -193,7 +218,11 @@ class GestureSolarApp {
         this.solarSystem.update(
             this.handPosition,
             this.isHandDetected,
-            this.currentGesture
+            this.currentGesture,
+            {
+                twoHandSpan: this.twoHandSpan,
+                tip: this.fingerTip
+            }
         );
 
         this.updateUI();
@@ -212,6 +241,8 @@ class GestureSolarApp {
                 'zoomin': '✌️ 拉近',
                 'zoomout': '🤏 拉远',
                 'box': '🤟 最佳视角',
+                'point': '☝️ 指向行星',
+                'twospan': '👐 双手缩放',
                 'none': '无'
             };
             if (this.isHandDetected) {
@@ -221,6 +252,10 @@ class GestureSolarApp {
                 this.gestureEl.textContent = '自动旋转';
                 this.gestureEl.className = 'value';
             }
+        }
+
+        if (this.handCountEl) {
+            this.handCountEl.textContent = this.handCount || 0;
         }
 
         if (this.fpsEl) {

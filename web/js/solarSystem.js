@@ -30,6 +30,10 @@ export class SolarSystem {
         this.camera.position.set(0, 80, 180);
         this.camera.lookAt(0, 0, 0);
 
+        // Zoom range: close enough to inspect a planet, far enough to see the whole system
+        this.minDistance = 8;
+        this.maxDistance = 600;
+
         // Control state
         this.cameraDistance = 180; // Perfect view distance
         this.cameraRotationX = Math.PI / 8; // Slight angle
@@ -52,6 +56,12 @@ export class SolarSystem {
         // Hand control
         this.controlMode = 'none';
         this.lastHandPosition = { x: 0, y: 0, z: 0 };
+
+        // Raycasting for pointing at planets
+        this._raycaster = new THREE.Raycaster();
+        this.focusedName = null;
+        this.focusedObject = null;
+        this._lastSpan = null;
 
         // Celestial objects
         this.sun = null;
@@ -136,6 +146,11 @@ export class SolarSystem {
         });
 
         this.sun = new THREE.Mesh(sunGeometry, sunMaterial);
+        this.sun.userData = {
+            name: PLANET_DATA.sun.name || 'Sun',
+            radius: PLANET_DATA.sun.radius,
+            isSun: true
+        };
         this.scene.add(this.sun);
 
         // Inner glow
@@ -542,13 +557,24 @@ export class SolarSystem {
         this.scene.add(this.welcomeText);
     }
 
-    update(handPosition, isHandDetected, gesture) {
+    update(handPosition, isHandDetected, gesture, extra) {
+        // dt: 真实经过的秒数, 让缩放速度与帧率无关
+        const now = performance.now();
+        if (this._lastUpdateTime === undefined) {
+            this._lastUpdateTime = now;
+        }
+        const dt = Math.min((now - this._lastUpdateTime) / 1000, 0.1);
+        this._lastUpdateTime = now;
+
         this.time += 0.01;
+        extra = extra || {};
 
         // Update control mode based on gesture
         if (isHandDetected) {
             switch (gesture) {
                 case 'rotate':
+                    // 握拳 = 退出聚焦, 回到自由视角旋转
+                    this.clearFocus();
                     this.controlMode = 'rotate';
                     this.handleRotate(handPosition);
                     break;
@@ -558,16 +584,28 @@ export class SolarSystem {
                     break;
                 case 'zoomin':
                     this.controlMode = 'zoom';
-                    this.targetDistance -= 3;
-                    this.targetDistance = Math.max(50, Math.min(300, this.targetDistance));
+                    // 60 单位/秒, 按真实时间推进, 与帧率无关
+                    this.targetDistance -= 60 * dt;
+                    this.targetDistance = Math.max(this.minDistance, Math.min(this.maxDistance, this.targetDistance));
                     break;
                 case 'zoomout':
                     this.controlMode = 'zoom';
-                    this.targetDistance += 3;
-                    this.targetDistance = Math.max(50, Math.min(300, this.targetDistance));
+                    this.targetDistance += 60 * dt;
+                    this.targetDistance = Math.max(this.minDistance, Math.min(this.maxDistance, this.targetDistance));
+                    break;
+                case 'twospan':
+                    // 双手张开: 双手间距越大 -> 拉近(像把星系往中间捏)
+                    this.controlMode = 'twospan';
+                    this.handleTwoHandSpan(extra.twoHandSpan);
+                    break;
+                case 'point':
+                    // 食指指向: 选中行星并聚焦
+                    this.controlMode = 'point';
+                    this.handlePoint(extra.tip);
                     break;
                 case 'box': // 3 fingers = Best View
                     this.controlMode = 'bestview';
+                    this.clearFocus();
                     this.targetDistance = this.bestViewDistance;
                     this.targetRotationX = this.bestViewRotationX;
                     this.targetRotationY = this.bestViewRotationY;
@@ -592,6 +630,11 @@ export class SolarSystem {
         this.cameraPanX += (this.targetPanX - this.cameraPanX) * smoothness;
         this.cameraPanY += (this.targetPanY - this.cameraPanY) * smoothness;
 
+        // 聚焦模式: 拉近到目标天体(相机跟随在 updateCamera 里处理, 这里只管距离)
+        if (this.focusedObject && this._focusTargetDistance) {
+            this.targetDistance += (this._focusTargetDistance - this.targetDistance) * 0.08;
+        }
+
         // Update camera position
         this.updateCamera();
 
@@ -603,6 +646,15 @@ export class SolarSystem {
 
         // Update asteroids
         this.updateAsteroids();
+
+        // 聚焦目标的标签跟随
+        if (this.focusedObject && this.focusedLabel) {
+            this.focusedLabel.position.set(
+                this.focusedObject.position.x,
+                this.focusedObject.position.y + 4,
+                this.focusedObject.position.z
+            );
+        }
     }
 
     handleRotate(handPosition) {
@@ -614,6 +666,135 @@ export class SolarSystem {
         this.targetRotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.targetRotationX));
     }
 
+    /**
+     * 双手张开时的间距缩放。
+     * span 越大(双手越分开) -> 越靠近, 像把整个星系往中间捏。
+     *
+     * 注意: render 帧率(60fps)高于手势数据帧率(~30fps), 同一个 span 会被
+     * 重复消费多次。所以必须只在 span 真正变化时才累加增量, 否则缩放会失控。
+     */
+    handleTwoHandSpan(span) {
+        if (!span || span <= 0) return;
+
+        if (this._lastSpan === undefined || this._lastSpan === null) {
+            this._lastSpan = span;
+            return;
+        }
+        const delta = span - this._lastSpan;
+        if (Math.abs(delta) < 1e-6) return;   // 值没变 -> 本帧不重复累加
+        this._lastSpan = span;
+
+        // 双手分开 -> 拉近; 双手靠拢 -> 拉远
+        this.targetDistance -= delta * 260;
+        this.targetDistance = Math.max(this.minDistance, Math.min(this.maxDistance, this.targetDistance));
+    }
+
+    /**
+     * 食指指向: 选中行星并聚焦。
+     * tip 是摄像头归一化坐标 [x, y] (0~1, 未镜像)。
+     *
+     * 用"投影到屏幕空间找最近天体"而不是纯几何射线:
+     * 行星半径很小(如地球 radius=1), 在远距离下射线几乎打不中,
+     * 屏幕空间匹配 + 容差更稳, 也更符合直觉(手指指哪就选哪)。
+     */
+    handlePoint(tip) {
+        if (!tip) return;
+
+        // 摄像头是镜像的, x 翻转后对应屏幕方向; y 直接用
+        const screenX = 1 - tip[0];
+        const screenY = tip[1];
+
+        // 容差: 屏幕高度的 6%
+        const tol = 0.06;
+
+        let best = null;
+        let bestDist = tol;
+
+        const consider = (obj) => {
+            if (!obj) return;
+            const v = obj.position.clone();
+            v.project(this.camera);   // -> NDC [-1, 1]
+            if (v.z > 1) return;     // 在相机背后
+            const sx = (v.x + 1) / 2;
+            const sy = 1 - (v.y + 1) / 2;
+            const d = Math.hypot(sx - screenX, sy - screenY);
+            if (d < bestDist) {
+                bestDist = d;
+                best = obj;
+            }
+        };
+
+        consider(this.sun);
+        for (const key in this.planets) consider(this.planets[key]);
+
+        if (best) {
+            const name = best.userData && best.userData.name;
+            if (name && name !== this.focusedName) {
+                this.focusedName = name;
+                this.focusedObject = best;
+                this._focusTargetDistance = this._distanceForFocus(best);
+                this._updateFocusLabel(name);
+            }
+            this._missCount = 0;
+        } else {
+            // 没选中: 连续多次未命中才解除, 避免手抖掉焦点
+            this._missCount = (this._missCount || 0) + 1;
+            if (this._missCount > 12) {
+                this.clearFocus();
+            }
+        }
+    }
+
+    /** 聚焦目标的名称标签 */
+    _updateFocusLabel(name) {
+        if (this.focusedLabel) {
+            this.scene.remove(this.focusedLabel);
+        }
+        // 用 Canvas 贴图做标签, 不依赖字体文件
+        const cv = document.createElement('canvas');
+        cv.width = 256;
+        cv.height = 64;
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = 'rgba(0,255,0,0.85)';
+        ctx.font = 'bold 34px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(name, 128, 34);
+
+        const tex = new THREE.CanvasTexture(cv);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: tex,
+            transparent: true,
+            depthTest: false
+        }));
+        sprite.scale.set(16, 4, 1);
+        this.focusedLabel = sprite;
+        this.scene.add(sprite);
+    }
+
+    /** 解除聚焦, 回到自由视角 */
+    clearFocus() {
+        if (!this.focusedObject && !this.focusedName) return;
+        this.focusedName = null;
+        this.focusedObject = null;
+        this._focusTargetDistance = 0;
+        this._missCount = 0;
+        if (this.focusedLabel) {
+            this.scene.remove(this.focusedLabel);
+            this.focusedLabel = null;
+        }
+    }
+
+    /** 根据目标大小计算合适的观察距离 */
+    _distanceForFocus(obj) {
+        const r = obj.geometry && obj.geometry.parameters
+            ? obj.geometry.parameters.radius
+            : 3;
+        // 视场角 60 度, 距离约等于 3 倍半径时能看全并留些余量
+        // 下限用 minDistance 保证不会穿模
+        return Math.max(this.minDistance, Math.min(this.maxDistance, r * 5.5));
+    }
+
     handlePan(handPosition) {
         const deltaX = handPosition.x - this.lastHandPosition.x;
         const deltaY = handPosition.y - this.lastHandPosition.y;
@@ -623,6 +804,20 @@ export class SolarSystem {
     }
 
     updateCamera() {
+        // 聚焦模式: 相机绕着被选中的天体转, 而不是平移整个场景
+        if (this.focusedObject) {
+            const f = this.focusedObject;
+            const cx = f.position.x;
+            const cy = f.position.y;
+            const cz = f.position.z;
+            const x = cx + this.cameraDistance * Math.sin(this.cameraRotationY) * Math.cos(this.cameraRotationX);
+            const y = cy + this.cameraDistance * Math.sin(this.cameraRotationX);
+            const z = cz + this.cameraDistance * Math.cos(this.cameraRotationY) * Math.cos(this.cameraRotationX);
+            this.camera.position.set(x, y, z);
+            this.camera.lookAt(cx, cy, cz);
+            return;
+        }
+
         const x = this.cameraDistance * Math.sin(this.cameraRotationY) * Math.cos(this.cameraRotationX);
         const y = this.cameraDistance * Math.sin(this.cameraRotationX);
         const z = this.cameraDistance * Math.cos(this.cameraRotationY) * Math.cos(this.cameraRotationX);

@@ -131,17 +131,30 @@ def classify_gesture(landmarks) -> str:
     extended.insert(0, bool(thumb_out))
 
     count = sum(extended)
+    # extended[0]=拇指, [1]=食指, [2]=中指, [3]=无名指, [4]=小指
+    thumb, index, middle, ring, pinky = extended
 
+    # 全掌张开(>=4 指) -> pan。放最前, 避免下面的组合规则误伤。
     if count >= 4:
         return "pan"
+
+    # 三指(食指+中指+无名指, 小指收起) -> 最佳视角
+    if index and middle and ring:
+        return "box"
+
+    # 食指单独伸出(其余手指收起) -> point, 用于指向选择行星
+    if index and not middle and not ring and not pinky:
+        return "point"
+
+    # 食指+中指 -> 缩放(用两指张合)
+    if index and middle:
+        return "zoomin"
+
     if count == 0:
         return "rotate"
     if count == 1:
-        return "rotate"
-    if count == 2:
-        return "zoomin"
-    if count == 3:
-        return "box"
+        # 只伸出拇指(竖大拇指) -> 视为张开, 便于双手配合
+        return "pan" if thumb else "rotate"
     return "pan"
 
 
@@ -210,7 +223,7 @@ class GestureEngine:
                 # VIDEO 模式: detect_for_video() 同步返回结果, 不强制要求 result_callback
                 # (MediaPipe 1.x 的 LIVE_STREAM 模式强制要求回调, 这里用 VIDEO 更可控)
                 running_mode=vision.RunningMode.VIDEO,
-                num_hands=1,
+                num_hands=2,
                 min_hand_detection_confidence=0.5,
                 min_hand_presence_confidence=0.5,
                 min_tracking_confidence=0.5,
@@ -269,41 +282,94 @@ class GestureEngine:
                 "landmarks": [],
                 "fps": round(fps, 1),
                 "pinch": 0.0,
+                "tip": [0.5, 0.5],
+                "hand_count": 0,
+                "hands": [],
+                "two_hand_span": 0.0,
             }
 
             hands = getattr(result, "hand_landmarks", None) or []
             if hands:
-                lm = hands[0]
-                pts = [(p.x, p.y, p.z) for p in lm]
+                parsed = []
+                for lm in hands:
+                    pts = [(p.x, p.y, p.z) for p in lm]
+                    cx = sum(p[0] for p in pts) / len(pts)
+                    cy = sum(p[1] for p in pts) / len(pts)
+                    cz = sum(p[2] for p in pts) / len(pts)
 
-                cx = sum(p[0] for p in pts) / len(pts)
-                cy = sum(p[1] for p in pts) / len(pts)
-                cz = sum(p[2] for p in pts) / len(pts)
+                    gesture = classify_gesture(pts)
 
-                gesture = classify_gesture(pts)
+                    # 两指(食指+中指)间距 -> 缩放方向
+                    two = _dist(pts[8], pts[12])
+                    if gesture == "zoomin":
+                        if self._prev_two_finger_dist is not None:
+                            # 手指数固定时, 用两指张开/合拢来判断拉近拉远
+                            if two > self._prev_two_finger_dist * 1.08:
+                                gesture = "zoomout"
+                            elif two < self._prev_two_finger_dist * 0.92:
+                                gesture = "zoomin"
+                        self._prev_two_finger_dist = two
+                    else:
+                        self._prev_two_finger_dist = None
 
-                # 两指(食指+中指)间距 -> 缩放方向
-                two = _dist(pts[8], pts[12])
-                if gesture == "zoomin":
-                    if self._prev_two_finger_dist is not None:
-                        # 手指数固定时, 用两指张开/合拢来判断拉近拉远
-                        if two > self._prev_two_finger_dist * 1.08:
-                            gesture = "zoomout"
-                        elif two < self._prev_two_finger_dist * 0.92:
-                            gesture = "zoomin"
-                    self._prev_two_finger_dist = two
+                    tip = pts[8]  # 食指尖, 用于指向选择行星
+
+                    parsed.append({
+                        "gesture": gesture,
+                        "x": round((cx - 0.5) * 2, 4),
+                        "y": round(-(cy - 0.5) * 2, 4),
+                        "z": round(cz, 4),
+                        "pinch": round(two, 4),
+                        "tip": [round(tip[0], 4), round(tip[1], 4)],
+                        "landmarks": [[round(p[0], 4), round(p[1], 4), round(p[2], 4)]
+                                      for p in pts],
+                    })
+
+                # 按 x 排序, 保证左右顺序稳定
+                parsed.sort(key=lambda h: h["x"])
+
+                two_hand_span = 0.0
+                main_tip = [0.5, 0.5]
+
+                if len(parsed) == 2 and all(h["gesture"] == "pan" for h in parsed):
+                    # 双手模式: 两手都张开 -> 双手间距控制缩放
+                    # (像捏着整个星系往两边拉)
+                    two_hand_span = round(
+                        _dist((parsed[0]["x"], parsed[0]["y"], 0.0),
+                              (parsed[1]["x"], parsed[1]["y"], 0.0)), 4)
+                    gesture = "twospan"
+                    landmarks = parsed[0]["landmarks"]
+                    cx = (parsed[0]["x"] + parsed[1]["x"]) / 2
+                    cy = (parsed[0]["y"] + parsed[1]["y"]) / 2
+                    cz = (parsed[0]["z"] + parsed[1]["z"]) / 2
+                    two = (parsed[0]["pinch"] + parsed[1]["pinch"]) / 2
                 else:
-                    self._prev_two_finger_dist = None
+                    # 单手主导: 优先取正在"指"的那只手, 否则取最靠画面中心的
+                    pointing = [h for h in parsed if h["gesture"] == "point"]
+                    if pointing:
+                        main = pointing[0]
+                    else:
+                        main = min(parsed, key=lambda h: abs(h["x"]))
+                    gesture = main["gesture"]
+                    landmarks = main["landmarks"]
+                    cx = main["x"]
+                    cy = main["y"]
+                    cz = main["z"]
+                    two = main["pinch"]
+                    main_tip = main["tip"]
 
                 state.update({
                     "hand_detected": True,
+                    "hand_count": len(parsed),
                     "gesture": gesture,
-                    "x": round((cx - 0.5) * 2, 4),
-                    "y": round(-(cy - 0.5) * 2, 4),
+                    "x": round(cx, 4),
+                    "y": round(cy, 4),
                     "z": round(cz, 4),
                     "pinch": round(two, 4),
-                    "landmarks": [[round(p[0], 4), round(p[1], 4), round(p[2], 4)]
-                                   for p in pts],
+                    "tip": main_tip,
+                    "two_hand_span": two_hand_span,
+                    "landmarks": landmarks,
+                    "hands": parsed,
                 })
             else:
                 self._prev_two_finger_dist = None
@@ -371,6 +437,8 @@ class Server:
         self.host = host
         self.port = port
         self.clients: set = set()
+        # 调试注入状态(任意客户端设置后, 全局覆盖广播源; None = 恢复真实数据)
+        self.injected: dict | None = None
 
     # -- HTTP 静态文件 ----------------------------------------------------
     async def _http_handler(self, connection, request):
@@ -428,9 +496,14 @@ class Server:
                 await asyncio.sleep(0.05)
                 continue
 
-            payload = json.dumps(self.engine.snapshot())
-            jpeg = self.engine.latest_jpeg()
-            send_jpeg = jpeg is not None and (now - last_jpeg) >= 0.066
+            payload = json.dumps(self.injected if self.injected is not None
+                                 else self.engine.snapshot())
+            # 注入模式下不发预览帧, 保留真实画面
+            if self.injected is None:
+                jpeg = self.engine.latest_jpeg()
+                send_jpeg = jpeg is not None and (now - last_jpeg) >= 0.066
+            else:
+                send_jpeg = False
 
             dead = []
             for ws in list(self.clients):
@@ -446,12 +519,29 @@ class Server:
                 self.clients.discard(ws)
 
     async def _ws_handler(self, websocket):
+        """
+        处理客户端连接。
+
+        支持调试注入: 客户端发送 JSON 且含 "__inject__" 字段时,
+        该状态会覆盖广播源, 直到客户端发送 {"__inject__": null} 或断开连接。
+        这样自动化测试可以稳定地驱动前端, 不受真实摄像头数据干扰。
+        """
         self.clients.add(websocket)
         log.info("客户端接入: %s (在线 %d)", getattr(websocket, "remote_address", "?"),
                  len(self.clients))
         try:
-            async for _ in websocket:
-                pass
+            async for message in websocket:
+                if isinstance(message, bytes):
+                    continue
+                try:
+                    data = json.loads(message)
+                except Exception:
+                    continue
+                if isinstance(data, dict) and "__inject__" in data:
+                    self.injected = data["__inject__"]
+                    log.info("收到注入状态: %s",
+                             "None(恢复真实数据)" if self.injected is None
+                             else self.injected.get("gesture"))
         except Exception:
             pass
         finally:
